@@ -5,6 +5,8 @@ import os
 import os.path as osp
 import re
 from io import BytesIO
+import json
+import time
 
 import requests
 import torch
@@ -45,98 +47,123 @@ def load_images(image_files):
         out.append(image)
     return out
 
+def get_prompt(question, options):
+  prompt = f"<video>\n {question} Answer with just a single letter corresponding to the option."
+  option_letters = 'ABCD'
+  for i, option in enumerate(options):
+    prompt += f"\n{option_letters[i]}. {option}"
+  return prompt
 
 def eval_model(args):
     # Model
     disable_torch_init()
-    if args.video_file is None:
-        image_files = image_parser(args)
-        images = load_images(image_files)
-    else:
-        if args.video_file.startswith("http") or args.video_file.startswith("https"):
-            print("downloading video from url", args.video_file)
-            response = requests.get(args.video_file)
-            video_file = BytesIO(response.content)
-        else:
-            assert osp.exists(args.video_file), "video file not found"
-            video_file = args.video_file
-        from llava.mm_utils import opencv_extract_frames
-
-        images, num_frames = opencv_extract_frames(video_file, args.num_video_frames)
-
     model_name = get_model_name_from_path(args.model_path)
     tokenizer, model, image_processor, context_len = load_pretrained_model(args.model_path, model_name, args.model_base)
 
-    qs = args.query
-    image_token_se = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN
-    if IMAGE_PLACEHOLDER in qs:
-        if model.config.mm_use_im_start_end:
-            qs = re.sub(IMAGE_PLACEHOLDER, image_token_se, qs)
-        else:
-            qs = re.sub(IMAGE_PLACEHOLDER, DEFAULT_IMAGE_TOKEN, qs)
-    else:
-        if DEFAULT_IMAGE_TOKEN not in qs:
-            print("no <image> tag found in input. Automatically append one at the beginning of text.")
-            # do not repeatively append the prompt.
+    results = []
+    correct_pd = 0
+
+    with open(args.anno_path, 'r') as file:
+        data = json.load(file)
+      
+    start_time = time.time()
+    for item in data:
+        video_file = args.video_dir + item['video'][1:]
+
+        from llava.mm_utils import opencv_extract_frames
+        images, num_frames = opencv_extract_frames(video_file, args.num_video_frames)
+
+        qs = get_prompt(item['question'], item['options'])
+        image_token_se = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN
+        if IMAGE_PLACEHOLDER in qs:
             if model.config.mm_use_im_start_end:
-                qs = (image_token_se + "\n") * len(images) + qs
+                qs = re.sub(IMAGE_PLACEHOLDER, image_token_se, qs)
             else:
-                qs = (DEFAULT_IMAGE_TOKEN + "\n") * len(images) + qs
-    print("input: ", qs)
+                qs = re.sub(IMAGE_PLACEHOLDER, DEFAULT_IMAGE_TOKEN, qs)
+        else:
+            if DEFAULT_IMAGE_TOKEN not in qs:
+                print("no <image> tag found in input. Automatically append one at the beginning of text.")
+                # do not repeatively append the prompt.
+                if model.config.mm_use_im_start_end:
+                    qs = (image_token_se + "\n") * len(images) + qs
+                else:
+                    qs = (DEFAULT_IMAGE_TOKEN + "\n") * len(images) + qs
+        print("input: ", qs)
 
-    if "llama-2" in model_name.lower():
-        conv_mode = "llava_llama_2"
-    elif "v1" in model_name.lower():
-        conv_mode = "llava_v1"
-    elif "mpt" in model_name.lower():
-        conv_mode = "mpt"
-    else:
-        conv_mode = "llava_v0"
+        if "llama-2" in model_name.lower():
+            conv_mode = "llava_llama_2"
+        elif "v1" in model_name.lower():
+            conv_mode = "llava_v1"
+        elif "mpt" in model_name.lower():
+            conv_mode = "mpt"
+        else:
+            conv_mode = "llava_v0"
 
-    if args.conv_mode is not None and conv_mode != args.conv_mode:
-        print(
-            "[WARNING] the auto inferred conversation mode is {}, while `--conv-mode` is {}, using {}".format(
-                conv_mode, args.conv_mode, args.conv_mode
+        if args.conv_mode is not None and conv_mode != args.conv_mode:
+            print(
+                "[WARNING] the auto inferred conversation mode is {}, while `--conv-mode` is {}, using {}".format(
+                    conv_mode, args.conv_mode, args.conv_mode
+                )
             )
-        )
-    else:
-        args.conv_mode = conv_mode
+        else:
+            args.conv_mode = conv_mode
 
-    conv = conv_templates[args.conv_mode].copy()
-    conv.append_message(conv.roles[0], qs)
-    conv.append_message(conv.roles[1], None)
-    prompt = conv.get_prompt()
+        conv = conv_templates[args.conv_mode].copy()
+        conv.append_message(conv.roles[0], qs)
+        conv.append_message(conv.roles[1], None)
+        prompt = conv.get_prompt()
 
-    images_tensor = process_images(images, image_processor, model.config).to(model.device, dtype=torch.float16)
-    input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).cuda()
+        images_tensor = process_images(images, image_processor, model.config).to(model.device, dtype=torch.float16)
+        input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).cuda()
 
-    stop_str = conv.sep if conv.sep_style != SeparatorStyle.TWO else conv.sep2
-    keywords = [stop_str]
-    stopping_criteria = KeywordsStoppingCriteria(keywords, tokenizer, input_ids)
+        stop_str = conv.sep if conv.sep_style != SeparatorStyle.TWO else conv.sep2
+        keywords = [stop_str]
+        stopping_criteria = KeywordsStoppingCriteria(keywords, tokenizer, input_ids)
 
-    print(images_tensor.shape)
-    with torch.inference_mode():
-        output_ids = model.generate(
-            input_ids,
-            images=[
-                images_tensor,
-            ],
-            do_sample=True if args.temperature > 0 else False,
-            temperature=args.temperature,
-            top_p=args.top_p,
-            num_beams=args.num_beams,
-            max_new_tokens=args.max_new_tokens,
-            use_cache=True,
-            stopping_criteria=[stopping_criteria],
-        )
+        print(images_tensor.shape)
+        with torch.inference_mode():
+            output_ids = model.generate(
+                input_ids,
+                images=[
+                    images_tensor,
+                ],
+                do_sample=True if args.temperature > 0 else False,
+                temperature=args.temperature,
+                top_p=args.top_p,
+                num_beams=args.num_beams,
+                max_new_tokens=args.max_new_tokens,
+                use_cache=True,
+                stopping_criteria=[stopping_criteria],
+            )
 
-    outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
-    outputs = outputs.strip()
-    if outputs.endswith(stop_str):
-        outputs = outputs[: -len(stop_str)]
-    outputs = outputs.strip()
-    print(outputs)
+        outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
+        outputs = outputs.strip()
+        if outputs.endswith(stop_str):
+            outputs = outputs[: -len(stop_str)]
+        outputs = outputs.strip()
+        print("Pred:", outputs)
 
+        results.append({
+            'pd': outputs, 
+            'gt': item['gt_option'], 
+            'needle_time': item['needle_time'],
+            'length': item['length']
+        })
+
+        if outputs == item['gt_option']:
+          correct_pd += 1
+        accuracy = (correct_pd / len(results)) * 100 if results else 0
+        elapsed_time = time.time() - start_time
+        avg_time_per_item = elapsed_time / (len(results) + 1)
+        remaining_time = avg_time_per_item * (len(data) - len(results) - 1)
+
+        print(f"Correct: {item['gt_option']}")
+        print(f"Accuracy: {accuracy:.2f}%")
+        print(f"Elapsed time: {elapsed_time:.2f}s")
+        print(f"Estimated remaining time: {remaining_time:.2f}s")
+
+    with open(args.output_path, 'w') as json_file:
+      json.dump(results, json_file, indent=4)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -145,13 +172,17 @@ if __name__ == "__main__":
     parser.add_argument("--image-file", type=str, default=None)
     parser.add_argument("--video-file", type=str, default=None)
     parser.add_argument("--num-video-frames", type=int, default=6)
-    parser.add_argument("--query", type=str, required=True)
+    parser.add_argument("--query", type=str, default=None)
     parser.add_argument("--conv-mode", type=str, default=None)
     parser.add_argument("--sep", type=str, default=",")
     parser.add_argument("--temperature", type=float, default=0.2)
     parser.add_argument("--top_p", type=float, default=None)
     parser.add_argument("--num_beams", type=int, default=1)
     parser.add_argument("--max_new_tokens", type=int, default=512)
+
+    parser.add_argument("--output-path", type=str, required=True)
+    parser.add_argument("--anno-path", type=str, required=True)
+    parser.add_argument("--video-dir", type=str, required=True)
     args = parser.parse_args()
 
     eval_model(args)
