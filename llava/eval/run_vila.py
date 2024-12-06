@@ -68,6 +68,7 @@ def eval_model(args):
       
     start_time = time.time()
     for item in data:
+        item_start_time = time.time()
         video_file = args.video_dir + item['video'][1:]
 
         from llava.mm_utils import opencv_extract_frames
@@ -143,11 +144,16 @@ def eval_model(args):
         outputs = outputs.strip()
         print("Pred:", outputs)
 
+        # Calculate latency for this item
+        item_end_time = time.time()
+        item_latency = item_end_time - item_start_time
+
         results.append({
             'pd': outputs, 
             'gt': item['gt_option'], 
             'needle_time': item['needle_time'],
-            'length': item['length']
+            'length': item['length'],
+            'latency': item_latency
         })
 
         if outputs == item['gt_option']:
@@ -159,6 +165,7 @@ def eval_model(args):
 
         print(f"Correct: {item['gt_option']}")
         print(f"Accuracy: {accuracy:.2f}%")
+        print(f"Item Latency: {item_latency}")
         print(f"Elapsed time: {elapsed_time:.2f}s")
         print(f"Estimated remaining time: {remaining_time:.2f}s")
 
