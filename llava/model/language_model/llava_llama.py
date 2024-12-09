@@ -174,8 +174,8 @@ class LlavaLlamaModel(LlavaMetaModel, LlavaMetaForCausalLM, PreTrainedModel):
             )
 
         # Loss rescale for SP & DP loss match
-        loss_weight = calculate_loss_weight(new_labels)
-        outputs.loss = outputs.loss * loss_weight
+        # loss_weight = calculate_loss_weight(new_labels)
+        # outputs.loss = outputs.loss * loss_weight
 
         if dpo_forward:
             return outputs.logits, new_labels
