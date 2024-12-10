@@ -13,6 +13,8 @@ import requests
 import torch
 from PIL import Image
 
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 from llava.constants import (
     DEFAULT_IM_END_TOKEN,
     DEFAULT_IM_START_TOKEN,
@@ -25,7 +27,6 @@ from llava.mm_utils import KeywordsStoppingCriteria, get_model_name_from_path, p
 from llava.model.builder import load_pretrained_model
 from llava.utils import disable_torch_init
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 from duo_attn.patch import enable_duo_attention_eval
 
 from duo_attn.utils import (
