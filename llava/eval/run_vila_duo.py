@@ -107,8 +107,8 @@ def eval_model(args):
     if osp.exists(args.output_path):
         try:
             with open(args.output_path, 'r') as json_file:
-                existing_results = json.load(json_file)
-                num_processed = len(existing_results)
+                results = json.load(json_file)
+                num_processed = len(results)
                 print(f"Loaded {num_processed} previously processed results.")
         except json.JSONDecodeError:
             print("Output file exists but is not valid JSON, starting fresh.")
@@ -116,9 +116,10 @@ def eval_model(args):
     else:
         results = []
 
-    correct_pd = sum(1 for r in results if r['pd'] == r['gt_option'])
+    correct_pd = sum(1 for r in results if r['pd'] == r['gt'])
     total_count = len(data)
     to_process_count = total_count - num_processed
+    print(f"Need to process {to_process_count} items")
 
     start_time = time.time()
     processed_this_run = 0
