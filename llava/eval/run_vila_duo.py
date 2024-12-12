@@ -103,16 +103,13 @@ def eval_model(args):
 
     # Attempt to load existing results to avoid re-processing
     results = []
-    processed_indices = set()
+    num_processed = 0
     if osp.exists(args.output_path):
         try:
             with open(args.output_path, 'r') as json_file:
                 existing_results = json.load(json_file)
-                # Extract processed indices
-                for r in existing_results:
-                    processed_indices.add(r['index'])
-                results = existing_results
-                print(f"Loaded {len(results)} previously processed results.")
+                num_processed = len(existing_results)
+                print(f"Loaded {num_processed} previously processed results.")
         except json.JSONDecodeError:
             print("Output file exists but is not valid JSON, starting fresh.")
             results = []
@@ -120,22 +117,14 @@ def eval_model(args):
         results = []
 
     correct_pd = sum(1 for r in results if r['pd'] == r['gt_option'])
-
-    # Count how many are already processed (skipped) and how many remain
-    already_processed_count = len(processed_indices)
     total_count = len(data)
-    to_process_count = total_count - already_processed_count
+    to_process_count = total_count - num_processed
 
-    # We'll measure time only from this run and for items processed this run
     start_time = time.time()
     processed_this_run = 0
 
-    for i, item in enumerate(data):
-        # Skip if this index is already processed
-        if i in processed_indices:
-            print(f"Skipping index {i}, already processed.")
-            continue
-
+    for i in range(num_processed, len(data)):
+        item = data[i]
         item_start_time = time.time()
         video_file = args.video_dir + item['video'][1:]
 
@@ -237,6 +226,7 @@ def eval_model(args):
         # Write results to file after processing each item
         with open(args.output_path, 'w') as json_file:
             json.dump(results, json_file, indent=4)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
