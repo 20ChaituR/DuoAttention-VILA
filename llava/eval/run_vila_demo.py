@@ -140,7 +140,7 @@ def eval_model(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-path", type=str, default="Efficient-Large-Model/VILA-2.7b")
+    parser.add_argument("--model-path", type=str, default="Efficient-Large-Model/Llama-3-VILA1.5-8b-Fix")
     parser.add_argument("--model-base", type=str, default=None)
     parser.add_argument("--image-file", type=str, default=None)
     parser.add_argument("--video-file", type=str, default="demo_images/bobsled.mp4")
