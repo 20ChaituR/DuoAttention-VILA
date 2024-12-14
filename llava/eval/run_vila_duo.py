@@ -65,6 +65,120 @@ def get_prompt(question, options):
     prompt += f"\n{option_letters[i]}. {option}"
   return prompt
 
+def eval_model_demo(args):
+  disable_torch_init()
+  model_name = get_model_name_from_path(args.model_path)
+  tokenizer, model, image_processor, context_len = load_pretrained_model(args.model_path, model_name, args.model_base)
+
+  print(
+      f"Loading attention pattern from {args.attn_load_dir} with sparsity {args.sparsity}"
+  )
+  full_attention_heads, sink_size, recent_size = load_attn_pattern(
+      args.attn_load_dir
+  )
+
+  if args.sink_size is not None:
+      sink_size = args.sink_size
+  if args.recent_size is not None:
+      recent_size = args.recent_size
+
+  full_attention_heads, sparsity = sparsify_attention_heads(
+      full_attention_heads, None, sparsity=args.sparsity
+  )
+  print(f"True sparsity: {sparsity}")
+
+  enable_duo_attention_eval(
+      model.llm,
+      full_attention_heads,
+      sink_size,
+      recent_size,
+  )
+
+  if args.video_file is None:
+        image_files = image_parser(args)
+        images = load_images(image_files)
+  else:
+      if args.video_file.startswith("http") or args.video_file.startswith("https"):
+          print("downloading video from url", args.video_file)
+          response = requests.get(args.video_file)
+          video_file = BytesIO(response.content)
+      else:
+          assert osp.exists(args.video_file), "video file not found"
+          video_file = args.video_file
+      from llava.mm_utils import opencv_extract_frames
+
+      images, num_frames = opencv_extract_frames(video_file, args.num_video_frames)
+
+  qs = args.query
+  image_token_se = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN
+  if IMAGE_PLACEHOLDER in qs:
+      if model.config.mm_use_im_start_end:
+          qs = re.sub(IMAGE_PLACEHOLDER, image_token_se, qs)
+      else:
+          qs = re.sub(IMAGE_PLACEHOLDER, DEFAULT_IMAGE_TOKEN, qs)
+  else:
+      if DEFAULT_IMAGE_TOKEN not in qs:
+          print("no <image> tag found in input. Automatically append one at the beginning of text.")
+          # do not repeatively append the prompt.
+          if model.config.mm_use_im_start_end:
+              qs = (image_token_se + "\n") * len(images) + qs
+          else:
+              qs = (DEFAULT_IMAGE_TOKEN + "\n") * len(images) + qs
+  print("input: ", qs)
+
+  if "llama-2" in model_name.lower():
+      conv_mode = "llava_llama_2"
+  elif "v1" in model_name.lower():
+      conv_mode = "llava_v1"
+  elif "mpt" in model_name.lower():
+      conv_mode = "mpt"
+  else:
+      conv_mode = "llava_v0"
+
+  if args.conv_mode is not None and conv_mode != args.conv_mode:
+      print(
+          "[WARNING] the auto inferred conversation mode is {}, while `--conv-mode` is {}, using {}".format(
+              conv_mode, args.conv_mode, args.conv_mode
+          )
+      )
+  else:
+      args.conv_mode = conv_mode
+
+  conv = conv_templates[args.conv_mode].copy()
+  conv.append_message(conv.roles[0], qs)
+  conv.append_message(conv.roles[1], None)
+  prompt = conv.get_prompt()
+
+  images_tensor = process_images(images, image_processor, model.config).to(model.device, dtype=torch.float16)
+  input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).cuda()
+
+  stop_str = conv.sep if conv.sep_style != SeparatorStyle.TWO else conv.sep2
+  keywords = [stop_str]
+  stopping_criteria = KeywordsStoppingCriteria(keywords, tokenizer, input_ids)
+
+  with torch.inference_mode():
+      output_ids = model.generate(
+          input_ids,
+          images=[
+              images_tensor,
+          ],
+          do_sample=True if args.temperature > 0 else False,
+          temperature=args.temperature,
+          top_p=args.top_p,
+          num_beams=args.num_beams,
+          max_new_tokens=args.max_new_tokens,
+          use_cache=True,
+          stopping_criteria=[stopping_criteria],
+      )
+
+  outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
+  outputs = outputs.strip()
+  if outputs.endswith(stop_str):
+      outputs = outputs[: -len(stop_str)]
+  outputs = outputs.strip()
+  print(outputs)
+
+
 def eval_model(args):
     # Model
     disable_torch_init()
@@ -244,9 +358,9 @@ if __name__ == "__main__":
     parser.add_argument("--num_beams", type=int, default=1)
     parser.add_argument("--max_new_tokens", type=int, default=512)
 
-    parser.add_argument("--output-path", type=str, required=True)
-    parser.add_argument("--anno-path", type=str, required=True)
-    parser.add_argument("--video-dir", type=str, required=True)
+    parser.add_argument("--output-path", type=str, default=None)
+    parser.add_argument("--anno-path", type=str, default=None)
+    parser.add_argument("--video-dir", type=str, default=None)
 
     parser.add_argument("--attn_load_dir", type=str, required=True)
     parser.add_argument("--sparsity", type=float, default=0.5)
@@ -254,4 +368,7 @@ if __name__ == "__main__":
     parser.add_argument("--recent_size", type=int, default=None)
     args = parser.parse_args()
 
-    eval_model(args)
+    if args.query is not None:
+      eval_model_demo(args)
+    else:
+      eval_model(args)
