@@ -16,7 +16,7 @@ This repository demonstrates how to integrate the DuoAttention framework into th
 
 We have prepared a short demo video that compares the baseline VILA model with our DuoAttention-integrated variant. This demonstration highlights the memory and efficiency improvements gained through DuoAttention.
 
-**Demo Video:** [View Demo](https://drive.google.com/file/d/16IaeSHKZUuylpRweSK7RzZiDOGz7Yrcx/view)
+https://github.com/user-attachments/assets/38b173f0-bc40-4a3e-972c-fdad53f627dc
 
 ## Installation and Setup
 
